@@ -1,6 +1,7 @@
 import { useState } from "react";
 import axios from "axios";
 import ReactMarkdown from "react-markdown";
+import "./App.css";
 
 function App() {
   const [repoUrl, setRepoUrl] = useState("");
@@ -67,13 +68,13 @@ function App() {
       }
 
       setReleaseNotes(res.data.release_notes || "No release notes generated.");
-    } catch (err: any) {
+    } catch (err: unknown) {
       setReleaseNotes("");
-      alert(
-        `Error generating release notes: ${
-          err.response?.data?.details || err.message
-        }`
-      );
+      if (axios.isAxiosError(err) && err.response?.data?.details) {
+        alert(`Error generating release notes: ${err.response.data.details}`);
+      } else {
+        alert(`Error generating release notes: ${String(err)}`);
+      }
     }
 
     setLoading(false);
@@ -160,7 +161,7 @@ function App() {
         </button>
 
         {releaseNotes && (
-          <div className="mt-4 p-4 border rounded bg-gray-50 whitespace-pre-wrap text-sm">
+          <div className="mt-4 p-4 border rounded bg-gray-50 text-sm markdown-body">
             <ReactMarkdown>{releaseNotes}</ReactMarkdown>
           </div>
         )}
