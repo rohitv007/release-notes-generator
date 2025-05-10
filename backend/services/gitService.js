@@ -1,89 +1,70 @@
-const { execSync } = require("child_process");
-const fs = require("fs");
-const path = require("path");
+const { summarizeTexts, summarizePR } = require("./summarizer");
+const { formatReleaseNotes } = require("./formatter");
+const axios = require("axios");
 
-async function fetchGitCommits(repoUrl, fromCommit, toCommit) {
-  console.log(`Starting to clone repo: ${repoUrl}`);
+/**
+ * Fetch commits between two commits from a GitHub repo.
+ * @param {string} repo_url - GitHub repo URL (e.g., https://github.com/user/repo)
+ * @param {string} from_commit
+ * @param {string} to_commit
+ * @returns {Promise<Array<{hash: string, message: string}>>}
+ */
+async function fetchGitCommits(repo_url, from_commit, to_commit) {
+  // Extract owner/repo from URL
+  const match = repo_url.match(/github\.com[:/](.+?)\/(.+?)(\.git)?$/i);
+  if (!match) throw new Error("Invalid GitHub repo URL");
+  const owner = match[1];
+  const repo = match[2];
 
-  const clonePath = path.join(__dirname, "repo");
-
-  if (fs.existsSync(clonePath)) fs.rmSync(clonePath, { recursive: true });
-
-  console.log("Cloning repo...");
-  try {
-    execSync(`git clone ${repoUrl} ${clonePath}`);
-    console.log("Repo cloned successfully.");
-  } catch (error) {
-    console.error("Error cloning the repo:", error.message);
-    throw error;
-  }
-
-  console.log(
-    `Fetching commits from commit hash ${fromCommit} to ${toCommit}...`
-  );
-  try {
-    execSync(`git fetch --all`, { cwd: clonePath });
-
-    const getCommitDate = (commitHash) => {
-      if (!commitHash) return null;
-      try {
-        return execSync(`git show -s --format=%ct ${commitHash}`, {
-          cwd: clonePath,
-        })
-          .toString()
-          .trim();
-      } catch (e) {
-        console.error(
-          `Error getting date for commit ${commitHash}:`,
-          e.message
-        );
-        return null;
-      }
-    };
-
-    const fromDate = getCommitDate(fromCommit);
-    const toDate = getCommitDate(toCommit);
-
-    let olderCommit = fromCommit;
-    let newerCommit = toCommit;
-
-    if (fromDate && toDate && parseInt(fromDate) > parseInt(toDate)) {
-      console.log("Commit range appears to be reversed, adjusting order...");
-      olderCommit = toCommit;
-      newerCommit = fromCommit;
-    }
-
-    let gitCommand;
-    if (olderCommit && newerCommit) {
-      gitCommand = `git log ${olderCommit}^..${newerCommit} --pretty=format:"%h|%s" --no-merges`;
-    } else if (newerCommit) {
-      gitCommand = `git log ${newerCommit} -10 --pretty=format:"%h|%s" --no-merges`;
-    } else if (olderCommit) {
-      gitCommand = `git log ${olderCommit}..HEAD --pretty=format:"%h|%s" --no-merges`;
-    } else {
-      gitCommand = `git log -10 --pretty=format:"%h|%s" --no-merges`;
-    }
-
-    console.log(`Executing git command: ${gitCommand}`);
-    const output = execSync(gitCommand, { cwd: clonePath });
-
-    const commits = output
-      .toString()
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => {
-        const [hash, ...messageParts] = line.split("|");
-        const message = messageParts.join("|");
-        return { hash, message };
-      });
-
-    console.log(`Fetched ${commits.length} commits from the repo.`);
-    return commits;
-  } catch (error) {
-    console.error("Error fetching commits:", error.message);
-    throw error;
-  }
+  // Use GitHub compare API
+  const url = `https://api.github.com/repos/${owner}/${repo}/compare/${from_commit}...${to_commit}`;
+  const res = await axios.get(url);
+  return res.data.commits.map((c) => ({
+    hash: c.sha,
+    message: c.commit.message,
+  }));
 }
 
-module.exports = { fetchGitCommits };
+/**
+ * Fetch PR info and commits from a GitHub repo.
+ * @param {string} repo_url - GitHub repo URL (e.g., https://github.com/user/repo)
+ * @param {string|number} pr_number
+ * @param {string} [github_token]
+ * @returns {Promise<{prInfo: object, commits: Array<{hash: string, message: string}>}>}
+ */
+async function fetchPRCommits(repo_url, pr_number, github_token) {
+  const match = repo_url.match(/github\.com[:/](.+?)\/(.+?)(\.git)?$/i);
+  if (!match) throw new Error("Invalid GitHub repo URL");
+  const owner = match[1];
+  const repo = match[2];
+
+  const headers = github_token
+    ? { Authorization: `token ${github_token}` }
+    : {};
+
+  // Get PR info
+  const prUrl = `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}`;
+  const prRes = await axios.get(prUrl, { headers });
+  const pr = prRes.data;
+
+  // Get PR commits
+  const commitsUrl = `https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/commits`;
+  const commitsRes = await axios.get(commitsUrl, { headers });
+  const commits = commitsRes.data.map((c) => ({
+    hash: c.sha,
+    message: c.commit.message,
+  }));
+
+  return {
+    prInfo: {
+      title: pr.title,
+      description: pr.body,
+      baseBranch: pr.base.ref,
+      headBranch: pr.head.ref,
+      author: pr.user.login,
+    },
+    commits,
+  };
+}
+
+module.exports = { fetchGitCommits, fetchPRCommits };
